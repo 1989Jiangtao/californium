@@ -963,45 +963,40 @@ public class DTLSConnector implements Connector, RecordLayer {
 	private void processApplicationDataRecord(final Record record, final Connection connection) {
 		final DTLSSession session = connection.getEstablishedSession();
 		if (session != null) {
-			RawData receivedApplicationMessage = null;
 			Handshaker ongoingHandshake = connection.getOngoingHandshake();
-			synchronized (session) {
-				// The DTLS 1.2 spec (section 4.1.2.6) advises to do replay detection
-				// before MAC validation based on the record's sequence numbers
-				// see http://tools.ietf.org/html/rfc6347#section-4.1.2.6
-				if (session.isRecordProcessable(record.getEpoch(), record.getSequenceNumber())) {
-					try {
-						// APPLICATION_DATA can only be processed within the context of
-						// an established, i.e. fully negotiated, session
-						record.setSession(session);
-						ApplicationMessage message = (ApplicationMessage) record.getFragment();
-						session.markRecordAsRead(record.getEpoch(), record.getSequenceNumber());
-						// create application message.
-						receivedApplicationMessage = RawData.inbound(message.getData(), session.getConnectionReadContext(), false);
-					} catch (HandshakeException | GeneralSecurityException e) {
-						// this means that we could not parse or decrypt the message
-						discardRecord(record, e);
+			// The DTLS 1.2 spec (section 4.1.2.6) advises to do replay detection
+			// before MAC validation based on the record's sequence numbers
+			// see http://tools.ietf.org/html/rfc6347#section-4.1.2.6
+			if (session.isRecordProcessable(record.getEpoch(), record.getSequenceNumber())) {
+				try {
+					// APPLICATION_DATA can only be processed within the context of
+					// an established, i.e. fully negotiated, session
+					record.setSession(session);
+					ApplicationMessage message = (ApplicationMessage) record.getFragment();
+					session.markRecordAsRead(record.getEpoch(), record.getSequenceNumber());
+					// create application message.
+					RawData receivedApplicationMessage = RawData.inbound(message.getData(), session.getConnectionReadContext(), false);
+					if (ongoingHandshake != null) {
+						// the fragment could be de-crypted
+						// thus, the handshake seems to have been completed successfully
+						ongoingHandshake.handshakeCompleted();
 					}
-				} else {
-					LOGGER.debug("Discarding duplicate APPLICATION_DATA record received from peer [{}]",
-							record.getPeerAddress());
-				}
-			}
-			if (receivedApplicationMessage != null) {
-				if (ongoingHandshake != null) {
-					// the fragment could be de-crypted
-					// thus, the handshake seems to have been completed successfully
-					ongoingHandshake.handshakeCompleted();
-				}
-				connection.refreshAutoResumptionTime();
-				connectionStore.update(connection);
+					connection.refreshAutoResumptionTime();
+					connectionStore.update(connection);
 
-				final RawDataChannel channel = messageHandler;
-				// finally, forward de-crypted message to application layer
-				// outside the synchronized block
-				if (channel != null) {
-					channel.receiveData(receivedApplicationMessage);
+					final RawDataChannel channel = messageHandler;
+					// finally, forward de-crypted message to application layer
+					// outside the synchronized block
+					if (channel != null) {
+						channel.receiveData(receivedApplicationMessage);
+					}
+				} catch (HandshakeException | GeneralSecurityException e) {
+					// this means that we could not parse or decrypt the message
+					discardRecord(record, e);
 				}
+			} else {
+				LOGGER.debug("Discarding duplicate APPLICATION_DATA record received from peer [{}]",
+						record.getPeerAddress());
 			}
 		} else {
 			Handshaker ongoingHandshake = connection.getOngoingHandshake();
